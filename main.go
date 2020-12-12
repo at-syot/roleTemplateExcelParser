@@ -23,21 +23,27 @@ func main() {
 	result := make(map[string]interface{})
 
 	// START
-	_, roles := getRoleNames(rows)
+	_, roles, ruleRanges := getRoleNames(rows)
 	securityGroups := getSecurityGroups(rows)
 	mergedRoles := mergeWithSecurityGroups(roles, securityGroups)
+	mergeWithSecurityGroupPermission(rows, mergedRoles)
 	// END
+
+  fmt.Println(ruleRanges)
 
 	result["roles"] = mergedRoles
 
-	dat, jsonStr := toJSONByte(result)
+	// dat, jsonStr := toJSONByte(result)
+  dat, _ := toJSONByte(result)
+
 	saveToJsonfile(dat)
 
-	fmt.Println(jsonStr)
+	// fmt.Printf("JSON result --> %v", jsonStr)
 }
 
-func getRoleNames(src [][]string) ([][]string, interface{}) {
+func getRoleNames(src [][]string) ([][]string, interface{}, []RolePermissionRuleRange) {
 	roles := []interface{}{}
+  ruleRanges := []RolePermissionRuleRange{}
 
 	for rowIdx, row := range src {
 		for colIdx, colCell := range row {
@@ -49,12 +55,19 @@ func getRoleNames(src [][]string) ([][]string, interface{}) {
 					role["roleName"] = roleName
 
 					roles = append(roles, role)
+          ruleRanges = append(ruleRanges, RolePermissionRuleRange{
+            roleName:  roleName,
+            ruleStart: colIdx,
+            ruleEnd:   colIdx + 7,
+          })
 				}
 			}
 		}
 	}
 
-	return src, roles
+  fmt.Println(ruleRanges)
+
+	return src, roles, ruleRanges
 }
 
 func getSecurityGroups(src [][]string) []string {
@@ -72,6 +85,7 @@ func getSecurityGroups(src [][]string) []string {
 
 func mergeWithSecurityGroups(roles interface{}, securityGroups []string) interface{} {
 	_roles, _ := roles.([]interface{})
+
 	for _, r := range _roles {
 		_r, _ := r.(map[string]interface{})
 
@@ -79,7 +93,7 @@ func mergeWithSecurityGroups(roles interface{}, securityGroups []string) interfa
 		for _, securityGroupName := range securityGroups {
 			_securityGroup := map[string]interface{}{}
 			_securityGroup["securityGroupName"] = securityGroupName
-			_securityGroup["securityPermission"] = []interface{}{}
+			_securityGroup["securityPermissions"] = []interface{}{}
 
 			_securityGroups = append(_securityGroups, _securityGroup)
 		}
@@ -90,12 +104,80 @@ func mergeWithSecurityGroups(roles interface{}, securityGroups []string) interfa
 	return _roles
 }
 
+func mergeWithSecurityGroupPermission(src [][]string, roles interface{}) {
+  // Interate through the roles json
+  _roles, _ := roles.([]interface{})
+  for _, r := range _roles {
+    _r, _ := r.(map[string]interface{})
+    securityGroups := _r["securityGroups"].([]interface{})
+
+    // grep each securityGroup
+    for _, sg := range securityGroups {
+      _sg := sg.(map[string]interface{})
+      sgName := _sg["securityGroupName"].(string)
+
+      // sgPermissions := _sg["securityPermissions"].([]interface{})
+      // fmt.Println(sgPermissions)
+
+      // fmt.Printf("at roleName: %v\n\n", _r["roleName"])
+      // fmt.Println(sgName)
+
+      // get Permissions for each group
+      roleName := _r["roleName"].(string)
+      getPermissionsByGroupAndRole(src, sgName, roleName)
+    }
+  }
+}
+
+func getPermissionsByGroupAndRole(src [][]string, sgName string, roleName string) []interface{} {
+  startRowIdx := 2
+  // permissionRange := struct{
+  //   start int
+  //   end int
+  // }{1, 2}
+
+  for rIdx, r := range src {
+    for cIdx, c := range r {
+      // just permissionGroup
+      if rIdx > startRowIdx && cIdx == 0 && c != "" && c == sgName {
+
+        // find permissions
+        // for _rIdx, _r := range src {
+        //   for _cIdx, _c := range _r {
+        //     if _rIdx > startRowIdx && _cIdx >= permissionRange.start && _cIdx <= permissionRange.end {
+        //       fmt.Printf("g: %v, p: %v\n", sgName, _c)
+        //     }
+        //   }
+        // }
+        // end find permission
+      }
+    }
+  }
+
+  return []interface{}{}
+}
+
+// Types 
+type GroupPermissionsRage struct {
+  roleName string 
+	rowStart int
+	rowEnd   int
+	colStart int
+	colEnd   int
+}
+
+type RolePermissionRuleRange struct {
+  roleName  string
+  ruleStart int
+  ruleEnd   int
+}
+
 // Utils
 func toJSONByte(obj interface{}) ([]byte, string) {
 	// map to json
 	json, _ := json.Marshal(obj)
 	jsonStr := string(json)
-	fmt.Println(jsonStr)
+	// fmt.Println(jsonStr)
 
 	return json, jsonStr
 }
