@@ -23,23 +23,43 @@ func main() {
 	result := make(map[string]interface{})
 
 	// START
+	rules := getRules(rows)
 	_, roles, ruleRanges := getRoleNames(rows)
 	securityGroups, pgRanges := getSecurityGroups(rows)
 	mergedRoles := mergeWithSecurityGroups(roles, securityGroups)
-	mergeWithSecurityGroupPermission(rows, mergedRoles, pgRanges, ruleRanges)
+	resultRoles := mergeWithSecurityGroupPermission(rows, mergedRoles, pgRanges, ruleRanges, rules)
 	// END
 
-	fmt.Println(ruleRanges)
-	fmt.Println(securityGroups)
-	fmt.Println(pgRanges)
+	_ = ruleRanges
+	_ = securityGroups
+	_ = pgRanges
 
-	result["roles"] = mergedRoles
+	result["roles"] = resultRoles
 
 	// dat, jsonStr := toJSONByte(result)
 	dat, _ := toJSONByte(result)
 
 	saveToJsonfile(dat)
 	// fmt.Printf("JSON result --> %v", jsonStr)
+}
+
+func getRules(src [][]string) []Rule {
+	rowIdx := 1
+	colStartIdx := 3
+	colEndIdx := 10
+
+	rules := []Rule{}
+	for colStartIdx <= colEndIdx {
+		rn := src[rowIdx][colStartIdx]
+		rules = append(rules, Rule{
+			title:  rn,
+			enable: false,
+		})
+
+		colStartIdx++
+	}
+
+	return rules
 }
 
 func getRoleNames(src [][]string) ([][]string, interface{}, []RoleRuleRange) {
@@ -66,8 +86,6 @@ func getRoleNames(src [][]string) ([][]string, interface{}, []RoleRuleRange) {
 		}
 	}
 
-	fmt.Println(ruleRanges)
-
 	return src, roles, ruleRanges
 }
 
@@ -76,7 +94,6 @@ func getSecurityGroups(src [][]string) ([]string, []PermissionGroupRange) {
 	permissionGroupRanges := []PermissionGroupRange{}
 
 	rowIdx := 0
-	fmt.Printf("src len: %v\n", len(src))
 	for rowIdx < len(src) {
 
 		colIdx := 0
@@ -135,7 +152,7 @@ func mergeWithSecurityGroups(roles interface{}, securityGroups []string) interfa
 	return _roles
 }
 
-func mergeWithSecurityGroupPermission(src [][]string, roles interface{}, sgRanges []PermissionGroupRange, ruleRanges []RoleRuleRange) {
+func mergeWithSecurityGroupPermission(src [][]string, roles interface{}, sgRanges []PermissionGroupRange, ruleRanges []RoleRuleRange, rules []Rule) interface{} {
 	// Interate through the roles json
 	_roles, _ := roles.([]interface{})
 	for _, r := range _roles {
@@ -147,21 +164,41 @@ func mergeWithSecurityGroupPermission(src [][]string, roles interface{}, sgRange
 			_sg := sg.(map[string]interface{})
 			sgName := _sg["securityGroupName"].(string)
 
-			// sgPermissions := _sg["securityPermissions"].([]interface{})
-			// fmt.Println(sgPermissions)
-
-			// fmt.Printf("at roleName: %v\n\n", _r["roleName"])
-			// fmt.Println(sgName)
-
-			// get Permissions for each group
+			// get Permissions for each Group
 			roleName := _r["roleName"].(string)
-			getPermissions(src, roleName, sgName, sgRanges, ruleRanges)
+			groupPermission := getPermissions(src, roleName, sgName, sgRanges, ruleRanges, rules)
+			_ = groupPermission
+
+			// fmt.Printf("rn: %v \n gp: %v\n\n\n", roleName, groupPermission.gn)
+
+			// arrange to json format
+			sgPermissions := _sg["securityPermissions"].([]interface{})
+			for _, permission := range groupPermission.permissions {
+				tmpPermission := map[string]interface{}{}
+				tmpPermission["name"] = permission.name
+
+				tmpRules := []map[string]interface{}{}
+				for _, rule := range permission.rules {
+					_rule := map[string]interface{}{}
+					_rule["name"] = rule.title
+					_rule["enable"] = rule.enable
+
+					tmpRules = append(tmpRules, _rule)
+				}
+				tmpPermission["rules"] = tmpRules
+
+				sgPermissions = append(sgPermissions, tmpPermission)
+			}
+
+			_sg["securityPermissions"] = sgPermissions
 		}
 	}
+
+	return _roles
 }
 
-func getPermissions(src [][]string, rn string, gn string, sgRanges []PermissionGroupRange, ruleRanges []RoleRuleRange) {
-	// var targetRuleRange RoleRuleRange
+func getPermissions(src [][]string, rn string, gn string, sgRanges []PermissionGroupRange, ruleRanges []RoleRuleRange, rules []Rule) GroupPermission {
+	var targetRuleRange RoleRuleRange
 	var targetSgRange PermissionGroupRange
 	for _, sgRange := range sgRanges {
 		if sgRange.gn == gn {
@@ -171,19 +208,17 @@ func getPermissions(src [][]string, rn string, gn string, sgRanges []PermissionG
 
 	for _, ruleRange := range ruleRanges {
 		if ruleRange.roleName == rn {
-			// targetRuleRange = ruleRange
+			targetRuleRange = ruleRange
 		}
 	}
 
-	gp := &GroupPermission{
+	resultGroupPermission := GroupPermission{
 		gn:          gn,
 		permissions: []Permission{},
 	}
-	// fmt.Printf("sg %v, rr %v\n", targetSgRange, targetRuleRange)
-	rowStart := targetSgRange.rowStart
+	rowStart := targetSgRange.rowStart + 1
 	rowEnd := targetSgRange.rowEnd
 	permissionColStart := targetSgRange.colStart
-	permissionColEnd := targetSgRange.colEnd
 
 	for rowStart <= rowEnd {
 		pn := src[rowStart][permissionColStart]
@@ -195,22 +230,36 @@ func getPermissions(src [][]string, rn string, gn string, sgRanges []PermissionG
 		permission.name = pn
 
 		// START find permission's rule
-		for permissionColStart < permissionColEnd {
-			rule := Rule{}
-			rule.title = fmt.Sprintf("col %v", permissionColStart)
-			rule.enable = false
-			if ruleEnable := src[rowStart][permissionColStart]; ruleEnable != "" {
+		ruleColStart := targetRuleRange.ruleStart
+		ruleColEnd := targetRuleRange.ruleEnd
+
+		// // for get rule type
+		justRuleIdx := 0
+		for ruleColStart <= ruleColEnd && rowStart < 110 {
+			/*
+				if rn == "Branch Manager (Role)" {
+					fmt.Printf("(r%v, c%v)sg: %v, pn: %v, rn: %v, enable: %v\n\n", rowStart, ruleColStart, gp.gn, pn, rules[justRuleIdx], src[rowStart][ruleColStart])
+				}
+			*/
+
+			rule := rules[justRuleIdx]
+			if ruleEnable := src[rowStart][ruleColStart]; ruleEnable != "" {
 				rule.enable = true
 			}
 
-			fmt.Printf("pn: %v, rule title: %v, isEnable: %v\n", permission.name, rule.title, rule.enable)
-			permissionColStart++
+			permission.rules = append(permission.rules, rule)
+
+			justRuleIdx++
+			ruleColStart++
 		}
 		// END
 
-		gp.permissions = append(gp.permissions, permission)
+		resultGroupPermission.permissions = append(resultGroupPermission.permissions, permission)
+
 		rowStart++
 	}
+
+	return resultGroupPermission
 }
 
 // Types
